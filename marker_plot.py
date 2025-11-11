@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Load CSV
-df = pd.read_csv("finger_angles_green.csv")
+df = pd.read_csv("finger_angles_green_robust.csv")
 
 # Drop rows with missing data
 valid_rows = df.dropna(subset=['mcp_x', 'pip_x', 'dip_x', 'tip_x']).reset_index(drop=True)
@@ -13,7 +13,7 @@ if len(valid_rows) < 2:
     exit()
 
 # Get first, last, and a few evenly spaced intermediate frames
-n_samples = 25  # total number of skeletons to display
+n_samples = 10  # total number of skeletons to display
 indices = np.linspace(0, len(valid_rows) - 1, n_samples, dtype=int)
 frames_to_plot = valid_rows.iloc[indices]
 

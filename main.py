@@ -1,101 +1,133 @@
 import cv2
 import numpy as np
 import pandas as pd
-import itertools
 
 # --- Video path ---
-cap = cv2.VideoCapture(r"data\test4_index.MOV")
+cap = cv2.VideoCapture(r"data\\test6_index.MOV")
 data = []
 frame_idx = 0
 
-# --- Parameters ---
-min_area = 800
-max_area = 8000
-lower_green = np.array([25, 40, 40])   # wide green range
-upper_green = np.array([95, 255, 255])
+# --- Detection parameters ---
+min_area = 300  # reduced to catch smaller markers
+max_area = 15000
+lower_green = np.array([40, 50, 80])
+upper_green = np.array([110, 255, 255])
 
-phalange_lengths = None  # store initial lengths: L1, L2, L3
+# --- Phalange length ratios (soft constraint) ---
+phalange_ratios = np.array([46, 26, 23], dtype=float)
+phalange_ratios = phalange_ratios / phalange_ratios[0]  # [1, 0.54, 0.5]
+
+prev_joints = None
+
+def angle(a, b, c):
+    ab = a - b
+    bc = c - b
+    cosang = np.dot(ab, bc) / (np.linalg.norm(ab) * np.linalg.norm(bc))
+    return np.degrees(np.arccos(np.clip(cosang, -1, 1)))
 
 while True:
     ret, frame = cap.read()
     if not ret:
         break
 
-    # Boost green channel
-    b, g, r = cv2.split(frame)
-    g = cv2.addWeighted(g, 1, g, 0, 0)
-    frame = cv2.merge((b, g, r))
-
-    # HSV mask
+    # --- Green mask ---
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, lower_green, upper_green)
-    mask = cv2.medianBlur(mask, 5)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3,3), np.uint8))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3,3), np.uint8))
+    mask = cv2.medianBlur(mask,7)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((4,4), np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5,5), np.uint8))
 
-    # Connected components
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
-    filtered = []
-    for i in range(1, num_labels):
-        area = stats[i, cv2.CC_STAT_AREA]
+    # --- Detect marker centers ---
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    centers = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
         if min_area <= area <= max_area:
-            filtered.append(centroids[i])
-    filtered = np.array(filtered)
+            M = cv2.moments(cnt)
+            if M['m00'] != 0:
+                cx = M['m10'] / M['m00']
+                cy = M['m01'] / M['m00']
+                centers.append([cx, cy])
+    centers = np.array(centers)
 
-    if len(filtered) == 4:
-        # For first frame: assign MCP→TIP by X coordinate
-        if phalange_lengths is None:
-            sorted_idx = np.argsort(filtered[:,0])
-            mcp, pip, dip, tip = filtered[sorted_idx]
-            # compute initial phalange lengths
+    # --- Assign joints ---
+    if len(centers) >= 4:
+        if prev_joints is None:
+            # First frame: assign MCP → TIP robustly
+            center = np.mean(centers, axis=0)
+            mcp_idx = np.argmax(np.linalg.norm(centers - center, axis=1))
+            mcp = centers[mcp_idx]
+            remaining = np.delete(centers, mcp_idx, axis=0)
+
+            # Sort remaining points by distance from MCP
+            dists = np.linalg.norm(remaining - mcp, axis=1)
+            sorted_remaining = remaining[np.argsort(dists)]
+            pip, dip, tip = sorted_remaining[0], sorted_remaining[1], sorted_remaining[2]
+
+            prev_joints = np.array([mcp, pip, dip, tip])
+        else:
+            # Temporal assignment: assign detected points to closest previous joint
+            new_joints = []
+            available = centers.copy()
+            for prev_joint in prev_joints:
+                idx = np.argmin(np.linalg.norm(available - prev_joint, axis=1))
+                new_joints.append(available[idx])
+                available = np.delete(available, idx, axis=0)
+            new_joints = np.array(new_joints)
+            mcp, pip, dip, tip = new_joints
+
+            # --- Soft phalange length adjustment ---
             L1 = np.linalg.norm(pip - mcp)
             L2 = np.linalg.norm(dip - pip)
             L3 = np.linalg.norm(tip - dip)
-            phalange_lengths = [L1, L2, L3]
-        else:
-            # Assign points using phalange-length constraints
-            best_score = np.inf
-            best_perm = None
-            for perm in itertools.permutations(filtered):
-                m, p, d, t = perm
-                L1c = np.linalg.norm(p - m)
-                L2c = np.linalg.norm(d - p)
-                L3c = np.linalg.norm(t - d)
-                score = abs(L1c - phalange_lengths[0]) + abs(L2c - phalange_lengths[1]) + abs(L3c - phalange_lengths[2])
-                if score < best_score:
-                    best_score = score
-                    best_perm = perm
-            mcp, pip, dip, tip = np.array(best_perm)
 
-        # Compute angles
-        def angle(a, b, c):
-            ab = a - b
-            bc = c - b
-            cosang = np.dot(ab, bc) / (np.linalg.norm(ab) * np.linalg.norm(bc))
-            return np.degrees(np.arccos(np.clip(cosang, -1, 1)))
+            L2_expected = L1 * phalange_ratios[1]
+            L3_expected = L1 * phalange_ratios[2]
 
+            if abs(L2 - L2_expected)/L2_expected > 0.15:
+                vec2 = (dip - pip) / np.linalg.norm(dip - pip)
+                dip = pip + vec2 * L2_expected
+
+            if abs(L3 - L3_expected)/L3_expected > 0.15:
+                vec3 = (tip - dip) / np.linalg.norm(tip - dip)
+                tip = dip + vec3 * L3_expected
+
+            prev_joints = np.array([mcp, pip, dip, tip])
+
+        # --- Compute angles ---
         pip_angle = angle(mcp, pip, dip)
         dip_angle = angle(pip, dip, tip)
 
-        # Save frame data
-        data.append([frame_idx, *mcp, *pip, *dip, *tip, pip_angle, dip_angle])
+        # --- Save frame data ---
+        data.append([
+            frame_idx,
+            *mcp, *pip, *dip, *tip,
+            pip_angle, dip_angle
+        ])
 
-        # Draw markers
-        for c in [mcp, pip, dip, tip]:
-            cv2.circle(frame, tuple(c.astype(int)), 6, (0,255,0), -1)
+        # --- Draw skeleton ---
+        pts = np.array([mcp, pip, dip, tip], dtype=int)
+        cv2.polylines(frame, [pts], isClosed=False, color=(0, 255, 255), thickness=2)
+        for c in pts:
+            cv2.circle(frame, (int(round(c[0])), int(round(c[1]))), 6, (0, 255, 0), -1)
 
-    # Show frame and mask
-    cv2.imshow("Detection", frame)
-    cv2.imshow("Mask", mask)
+    scale = 0.5
+    display_frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
+    display_mask = cv2.resize(mask, (display_frame.shape[1], display_frame.shape[0]))
+
+    cv2.imshow("Detection", display_frame)
+    cv2.imshow("Mask", display_mask)
+
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
     frame_idx += 1
 
+# --- Cleanup ---
 cap.release()
 cv2.destroyAllWindows()
 
-# Save CSV
+# --- Save CSV ---
 df = pd.DataFrame(
     data,
     columns=[
@@ -107,5 +139,5 @@ df = pd.DataFrame(
         "pip_angle","dip_angle"
     ]
 )
-df.to_csv("finger_angles_green.csv", index=False)
-print("✅ Saved -> finger_angles_green.csv")
+df.to_csv("finger_angles_green_robust.csv", index=False)
+print("Saved -> finger_angles_green_robust.csv")
