@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import pandas as pd
+import itertools
 
 # --- Video path ---
 cap = cv2.VideoCapture(r"data\test4_index.MOV")
@@ -10,45 +11,63 @@ frame_idx = 0
 # --- Parameters ---
 min_area = 800
 max_area = 8000
-lower_green = np.array([30, 60, 40])
-upper_green = np.array([90, 255, 255])
+lower_green = np.array([25, 40, 40])   # wide green range
+upper_green = np.array([95, 255, 255])
+
+phalange_lengths = None  # store initial lengths: L1, L2, L3
 
 while True:
     ret, frame = cap.read()
     if not ret:
         break
 
-    # Boost green channel for better visibility
+    # Boost green channel
     b, g, r = cv2.split(frame)
     g = cv2.addWeighted(g, 1, g, 0, 0)
     frame = cv2.merge((b, g, r))
 
-    # Convert to HSV and threshold for green
+    # HSV mask
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, lower_green, upper_green)
-
-    # Clean up mask
     mask = cv2.medianBlur(mask, 5)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3,3), np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3,3), np.uint8))
 
-    # Find connected components
+    # Connected components
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
-
-    # Filter centroids by area
-    filtered_centers = []
-    for i in range(1, num_labels):  # skip background
+    filtered = []
+    for i in range(1, num_labels):
         area = stats[i, cv2.CC_STAT_AREA]
         if min_area <= area <= max_area:
-            filtered_centers.append(centroids[i])
-    filtered_centers = np.array(filtered_centers)
+            filtered.append(centroids[i])
+    filtered = np.array(filtered)
 
-    # Proceed only if exactly 4 markers detected
-    if len(filtered_centers) == 4:
-        centers = sorted(filtered_centers, key=lambda c: c[0])  # MCP → TIP by X
-        mcp, pip, dip, tip = np.array(centers)
+    if len(filtered) == 4:
+        # For first frame: assign MCP→TIP by X coordinate
+        if phalange_lengths is None:
+            sorted_idx = np.argsort(filtered[:,0])
+            mcp, pip, dip, tip = filtered[sorted_idx]
+            # compute initial phalange lengths
+            L1 = np.linalg.norm(pip - mcp)
+            L2 = np.linalg.norm(dip - pip)
+            L3 = np.linalg.norm(tip - dip)
+            phalange_lengths = [L1, L2, L3]
+        else:
+            # Assign points using phalange-length constraints
+            best_score = np.inf
+            best_perm = None
+            for perm in itertools.permutations(filtered):
+                m, p, d, t = perm
+                L1c = np.linalg.norm(p - m)
+                L2c = np.linalg.norm(d - p)
+                L3c = np.linalg.norm(t - d)
+                score = abs(L1c - phalange_lengths[0]) + abs(L2c - phalange_lengths[1]) + abs(L3c - phalange_lengths[2])
+                if score < best_score:
+                    best_score = score
+                    best_perm = perm
+            mcp, pip, dip, tip = np.array(best_perm)
 
-        # Angle calculation
+        # Compute angles
         def angle(a, b, c):
             ab = a - b
             bc = c - b
@@ -58,17 +77,16 @@ while True:
         pip_angle = angle(mcp, pip, dip)
         dip_angle = angle(pip, dip, tip)
 
+        # Save frame data
         data.append([frame_idx, *mcp, *pip, *dip, *tip, pip_angle, dip_angle])
 
-        # Draw detected markers
+        # Draw markers
         for c in [mcp, pip, dip, tip]:
-            cv2.circle(frame, tuple(c.astype(int)), 5, (0, 255, 0), -1)
+            cv2.circle(frame, tuple(c.astype(int)), 6, (0,255,0), -1)
 
-    # Show original frame with markers
+    # Show frame and mask
     cv2.imshow("Detection", frame)
-    # Show mask
     cv2.imshow("Mask", mask)
-
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
