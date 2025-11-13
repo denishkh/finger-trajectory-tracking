@@ -3,18 +3,18 @@ import numpy as np
 import pandas as pd
 
 # --- Video path ---
-cap = cv2.VideoCapture(r"data\\test6_index.MOV")
+cap = cv2.VideoCapture(r"data\november 13 test 1\test1.MOV")
 data = []
 frame_idx = 0
 
 # --- Detection parameters ---
-min_area = 300  # reduced to catch smaller markers
-max_area = 15000
-lower_green = np.array([40, 50, 80])
-upper_green = np.array([110, 255, 255])
+min_area = 50  # reduced to catch smaller markers
+max_area = 2000
+lower_green = np.array([35, 40, 40])
+upper_green = np.array([85, 255, 255])
 
 # --- Phalange length ratios (soft constraint) ---
-phalange_ratios = np.array([46, 26, 23], dtype=float)
+phalange_ratios = np.array([44.75, 26.31, 20.98], dtype=float)
 phalange_ratios = phalange_ratios / phalange_ratios[0]  # [1, 0.54, 0.5]
 
 prev_joints = None
