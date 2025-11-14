@@ -1,16 +1,31 @@
 import cv2
 import numpy as np
 import pandas as pd
+import os
 
 # --- Video path ---
-cap = cv2.VideoCapture(r"data\november 13 test 1\test1.MOV")
+input_path = r"data\november 13 test 1\test5.MOV"
+cap = cv2.VideoCapture(input_path)
 data = []
 frame_idx = 0
+
+annotated_dir = r"annotated"
+os.makedirs(annotated_dir, exist_ok=True)
+base_name = os.path.splitext(os.path.basename(input_path))[0]
+output_video_path = os.path.join(annotated_dir, f"annotated_{base_name}.mp4")
+
+# --- Setup video writer for annotated output ---
+fps = cap.get(cv2.CAP_PROP_FPS)
+width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or 'XVID'
+out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
 
 # --- Detection parameters ---
 min_area = 50  # reduced to catch smaller markers
 max_area = 2000
-lower_green = np.array([35, 40, 40])
+lower_green = np.array([40, 30, 30])
 upper_green = np.array([85, 255, 255])
 
 # --- Phalange length ratios (soft constraint) ---
@@ -111,6 +126,9 @@ while True:
         for c in pts:
             cv2.circle(frame, (int(round(c[0])), int(round(c[1]))), 6, (0, 255, 0), -1)
 
+        # --- Write annotated frame to output video ---
+        out.write(frame)
+
     scale = 0.5
     display_frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
     display_mask = cv2.resize(mask, (display_frame.shape[1], display_frame.shape[0]))
@@ -125,6 +143,7 @@ while True:
 
 # --- Cleanup ---
 cap.release()
+out.release()
 cv2.destroyAllWindows()
 
 # --- Save CSV ---
@@ -139,5 +158,4 @@ df = pd.DataFrame(
         "pip_angle","dip_angle"
     ]
 )
-df.to_csv("finger_angles_green_robust.csv", index=False)
-print("Saved -> finger_angles_green_robust.csv")
+df.to_csv("finger_angles_pinch_exo.csv", index=False)
